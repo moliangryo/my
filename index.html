@@ -30841,38 +30841,7 @@ document.getElementById('send-btn').addEventListener('click', () => { // 注意�
         chat.history.push(msg);
         await db.chats.put(chat); // 保存到数据库
         updateChatListItem(chat.id); // 【优化3】使用“精准更新”替换“全局刷新”
-/**
- * 【全新】精准更新单个聊天项的预览和位置，而不是刷新整个列表
- * @param {string} chatId - 需要更新的聊天ID
- */
-function updateChatListItem(chatId) {
-    const chat = state.chats[chatId];
-    if (!chat) return;
 
-    const chatListEl = document.getElementById('chat-list');
-    const existingItem = chatListEl.querySelector(`.chat-list-item[data-chat-id="${chatId}"]`);
-    
-    // 1. 创建一个新的、包含最新信息的列表项
-    const newItem = createChatListItem(chat);
-
-    // 2. 如果旧的列表项存在，就用新的替换它
-    if (existingItem) {
-        const parent = existingItem.parentNode;
-        parent.replaceChild(newItem, existingItem);
-
-        // 3. 如果这个聊天没有被置顶，就把它移动到最前面（非置顶区域的顶部）
-        if (!chat.isPinned) {
-            const firstUnpinned = chatListEl.querySelector('.chat-list-item:not(.pinned)');
-            if (firstUnpinned && firstUnpinned !== newItem) {
-                chatListEl.insertBefore(newItem, firstUnpinned);
-            }
-        }
-    } else {
-        // 如果列表里之前没有这一项，就直接添加到顶部
-        chatListEl.prepend(newItem);
-    }
-}
-    })();
 
     // 清理工作（这部分很快，可以立即执行）
     chatInput.value = '';
