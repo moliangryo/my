@@ -34603,10 +34603,11 @@ document.getElementById('regenerate-char-usage-btn').addEventListener('click', h
 
 
                     showScreen('home-screen');
-                }
-        
-                init();
-            });
+
+    } // <--- 正确位置！init 函数应该在这里结束
+
+    init();
+});
         
     </script>
     <div id="qzone-sticker-panel">
