@@ -20454,89 +20454,94 @@ async function saveEditedPost(postId, newRawContent) {
         }
         
 /**
- * 【核心 | V3.0 终极总结修复版】结束视频通话
- */
-async function endVideoCall() {
-    if (!videoCallState.isActive) return;
+/**
+         * 【核心 | V3.0 终极总结修复版】结束视频通话
+         */
+        async function endVideoCall() {
+            if (!videoCallState.isActive) return;
 
-    const duration = Math.floor((Date.now() - videoCallState.startTime) / 1000);
-    const durationText = `${Math.floor(duration / 60)}分${duration % 60}秒`;
-    const endCallText = `通话结束，时长 ${durationText}`;
+            const duration = Math.floor((Date.now() - videoCallState.startTime) / 1000);
+            const durationText = `${Math.floor(duration / 60)}分${duration % 60}秒`;
+            const endCallText = `通话结束，时长 ${durationText}`;
 
-    const chat = state.chats[videoCallState.activeChatId];
-    if (chat) {
-        // 1. 保存完整的通话记录到数据库 (这部分逻辑不变，非常重要)
-        const participantsData = [];
-        if (videoCallState.isGroupCall) {
-            videoCallState.participants.forEach(p => participantsData.push({ name: p.originalName, avatar: p.avatar }));
-            if (videoCallState.isUserParticipating) {
-                participantsData.unshift({ name: chat.settings.myNickname || '我', avatar: chat.settings.myAvatar || defaultMyGroupAvatar });
+            const chat = state.chats[videoCallState.activeChatId];
+            if (chat) {
+                // 1. 保存完整的通话记录到数据库 (这部分逻辑不变，非常重要)
+                const participantsData = [];
+                if (videoCallState.isGroupCall) {
+                    videoCallState.participants.forEach(p => participantsData.push({ name: p.originalName, avatar: p.avatar }));
+                    if (videoCallState.isUserParticipating) {
+                        participantsData.unshift({ name: chat.settings.myNickname || '我', avatar: chat.settings.myAvatar || defaultMyGroupAvatar });
+                    }
+                } else {
+                    participantsData.push({ name: chat.name, avatar: chat.settings.aiAvatar || defaultAvatar });
+                    participantsData.unshift({ name: '我', avatar: chat.settings.myAvatar || defaultAvatar });
+                }
+
+                const callRecord = {
+                    chatId: videoCallState.activeChatId,
+                    timestamp: Date.now(),
+                    duration: duration,
+                    participants: participantsData,
+                    transcript: [...videoCallState.callHistory]
+                };
+                await db.callRecords.add(callRecord);
+                console.log("通话记录已保存:", callRecord);
+                
+                // 2. 在聊天记录里添加对用户可见的“通话结束”消息 (逻辑不变)
+                let summaryMessage = {
+                    role: videoCallState.initiator === 'user' ? 'user' : 'assistant',
+                    content: endCallText,
+                    timestamp: Date.now(),
+                };
+                if (chat.isGroup && summaryMessage.role === 'assistant') {
+                    summaryMessage.senderName = videoCallState.callRequester || chat.members[0]?.originalName || chat.name;
+                }
+                chat.history.push(summaryMessage);
+
+                // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                //            这就是本次修改的核心所在！
+                // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                
+                // 3. 【全新】将完整的通话记录“翻译”成一段AI能理解的文本
+                const callTranscriptForAI = videoCallState.callHistory.map(h => {
+                    const sender = h.role === 'user' ? (chat.settings.myNickname || '我') : h.senderName;
+                    return `${sender}: ${h.content}`;
+                }).join('\n');
+                
+                // 4. 【全新】在后台调用总结函数，并等待它的结果
+                const summaryResult = await summarizeCallTranscript(chat.id, callTranscriptForAI);
+                
+                // 【【【核心修复！】】】根据总结结果，决定下一步行动
+                if (!summaryResult.success) {
+                    // 如果总结失败，弹出一个非阻塞的提示，但不影响后续流程
+                    showCustomAlert("后台总结失败", `未能将本次通话存入长期记忆。\n错误: ${summaryResult.error}`);
+                }
+
+                // 5. 【全新】创建一个对用户隐藏的、简短的系统消息，让AI对通话结束这件事本身做出反应
+                const hiddenReactionInstruction = {
+                    role: 'system',
+                    content: `[系统指令：视频通话刚刚结束。请你以角色的口吻，向用户主动发送一两条消息，来自然地总结这次通话的要点、确认达成的约定，或者表达你的感受。]`,
+                    timestamp: Date.now() + 1, // 确保时间戳在“通话结束”消息之后
+                    isHidden: true // 这个标记确保用户看不到这条指令
+                };
+                chat.history.push(hiddenReactionInstruction);
+
+                // 6. 将所有更新（包括通话结束消息和隐藏指令）一次性保存到数据库
+                await db.chats.put(chat);
             }
-        } else {
-            participantsData.push({ name: chat.name, avatar: chat.settings.aiAvatar || defaultAvatar });
-            participantsData.unshift({ name: '我', avatar: chat.settings.myAvatar || defaultAvatar });
+            
+            // 7. 清理和重置状态 (逻辑不变)
+            clearInterval(callTimerInterval);
+            callTimerInterval = null;
+            videoCallState = { isActive: false, isAwaitingResponse: false, isGroupCall: false, activeChatId: null, initiator: null, startTime: null, participants: [], isUserParticipating: true, callHistory: [], preCallContext: "" };
+            
+            // 8. 返回聊天界面，并触发AI对通话结束的反应
+            if (chat) {
+                openChat(chat.id);
+                triggerAiResponse(); // 现在，AI会看到我们刚刚添加的隐藏指令，从而做出正确的回应
+            }
         }
-
-        const callRecord = {
-            chatId: videoCallState.activeChatId,
-            timestamp: Date.now(),
-            duration: duration,
-            participants: participantsData,
-            transcript: [...videoCallState.callHistory]
-        };
-        await db.callRecords.add(callRecord);
-        console.log("通话记录已保存:", callRecord);
-        
-        // 2. 在聊天记录里添加对用户可见的“通话结束”消息 (逻辑不变)
-        let summaryMessage = {
-            role: videoCallState.initiator === 'user' ? 'user' : 'assistant',
-            content: endCallText,
-            timestamp: Date.now(),
-        };
-        if (chat.isGroup && summaryMessage.role === 'assistant') {
-            summaryMessage.senderName = videoCallState.callRequester || chat.members[0]?.originalName || chat.name;
-        }
-        chat.history.push(summaryMessage);
-
-        // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        //            这就是本次修改的核心所在！
-        // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        
-        // 3. 【全新】将完整的通话记录“翻译”成一段AI能理解的文本
-        const callTranscriptForAI = videoCallState.callHistory.map(h => {
-            const sender = h.role === 'user' ? (chat.settings.myNickname || '我') : h.senderName;
-            return `${sender}: ${h.content}`;
-        }).join('\n');
-        
-        // 4. 【全新】在后台调用总结函数，它会自动处理API调用和记忆存储
-        // 我们在这里不使用 await，让它在后台静默执行，不阻塞UI
-        summarizeCallTranscript(chat.id, callTranscriptForAI);
-
-        // 5. 【全新】创建一个对用户隐藏的、简短的系统消息，让AI对通话结束这件事本身做出反应
-        const hiddenReactionInstruction = {
-            role: 'system',
-            content: `[系统指令：视频通话刚刚结束。请你以角色的口吻，向用户主动发送一两条消息，来自然地总结这次通话的要点、确认达成的约定，或者表达你的感受。]`,
-            timestamp: Date.now() + 1, // 确保时间戳在“通话结束”消息之后
-            isHidden: true // 这个标记确保用户看不到这条指令
-        };
-        chat.history.push(hiddenReactionInstruction);
-
-        // 6. 保存所有更新到数据库
-        await db.chats.put(chat);
-    }
-    
-    // 7. 清理和重置状态 (逻辑不变)
-    clearInterval(callTimerInterval);
-    callTimerInterval = null;
-    videoCallState = { isActive: false, isAwaitingResponse: false, isGroupCall: false, activeChatId: null, initiator: null, startTime: null, participants: [], isUserParticipating: true, callHistory: [], preCallContext: "" };
-    
-    // 8. 返回聊天界面，并触发AI对通话结束的反应
-    if (chat) {
-        openChat(chat.id);
-        triggerAiResponse();
-    }
-}
-        // ▲▲▲ 替换结束 ▲▲▲
         
         /**
          * 【全新】更新通话界面的参与者头像网格
@@ -22893,21 +22898,21 @@ async function handleDeleteMemory(authorChatId, memoryTimestamp) {
             }
         }
 /**
- * 【V2.0 | 错误处理增强版】专门用于总结通话记录并存入长期记忆的核心函数
- * @param {string} chatId - 目标聊天的ID
- * @param {string} transcriptText - 格式化后的通话文字记录
- * @returns {Promise<boolean>} - 返回一个Promise，成功时解析为true，失败时会抛出错误。
- */
-async function summarizeCallTranscript(chatId, transcriptText) {
-    const chat = state.chats[chatId];
-    if (!chat || !transcriptText) {
-        // 如果基础数据就有问题，直接抛出错误
-        throw new Error("基础数据不完整，无法开始总结。");
-    }
+         * 【V3.0 | 错误处理增强与流程优化版】专门用于总结通话记录并存入长期记忆的核心函数
+         * @param {string} chatId - 目标聊天的ID
+         * @param {string} transcriptText - 格式化后的通话文字记录
+         * @returns {Promise<{success: boolean, error?: string}>} - 返回一个包含成功状态和可选错误信息的结果对象
+         */
+        async function summarizeCallTranscript(chatId, transcriptText) {
+            const chat = state.chats[chatId];
+            if (!chat || !transcriptText) {
+                // 如果基础数据就有问题，直接返回错误对象
+                return { success: false, error: "基础数据不完整，无法开始总结。" };
+            }
 
-    const userNickname = state.qzoneSettings.nickname || '用户';
+            const userNickname = state.qzoneSettings.nickname || '用户';
 
-    const systemPrompt = `
+            const systemPrompt = `
 # 你的任务
 你是一个对话摘要专家。你的唯一任务是阅读下面的【视频通话记录】，并将其浓缩成【一段】流畅、连贯、客观、并且【极其精简】的摘要。
 # 核心规则
@@ -22920,60 +22925,64 @@ async function summarizeCallTranscript(chatId, transcriptText) {
 ${transcriptText}
 现在，请开始你的总结工作。`;
 
-    // ▲▲▲ 核心修改从这里开始 ▲▲▲
-    try {
-        const useSecondaryApi = state.apiConfig.secondaryProxyUrl && state.apiConfig.secondaryApiKey && state.apiConfig.secondaryModel;
-        const { proxyUrl, apiKey, model } = useSecondaryApi ? 
-            { proxyUrl: state.apiConfig.secondaryProxyUrl, apiKey: state.apiConfig.secondaryApiKey, model: state.apiConfig.secondaryModel } : 
-            state.apiConfig;
+            try {
+                // 智能选择API：优先使用副API，如果未配置则自动回退到主API
+                const useSecondaryApi = state.apiConfig.secondaryProxyUrl && state.apiConfig.secondaryApiKey && state.apiConfig.secondaryModel;
+                const { proxyUrl, apiKey, model } = useSecondaryApi ? 
+                    { proxyUrl: state.apiConfig.secondaryProxyUrl, apiKey: state.apiConfig.secondaryApiKey, model: state.apiConfig.secondaryModel } : 
+                    state.apiConfig;
 
-        if (!proxyUrl || !apiKey || !model) throw new Error('API未配置，无法进行总结。');
+                if (!proxyUrl || !apiKey || !model) {
+                    return { success: false, error: 'API未配置，无法进行总结。' };
+                }
 
-        let isGemini = proxyUrl.includes('generativelanguage');
-        let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, [{ role: 'user', content: "请开始总结。" }]);
+                let isGemini = proxyUrl.includes('generativelanguage');
+                let geminiConfig = toGeminiRequestData(model, apiKey, systemPrompt, [{ role: 'user', content: "请开始总结。" }]);
 
-        const response = isGemini 
-            ? await fetch(geminiConfig.url, geminiConfig.data) 
-            : await fetch(`${proxyUrl}/v1/chat/completions`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`},
-                body: JSON.stringify({
-                    model: model,
-                    messages: [{role: 'system', content: systemPrompt}, {role: 'user', content: "请开始总结。"}],
-                    temperature: 0.1, max_tokens: 150
-                })
-            });
+                const response = isGemini 
+                    ? await fetch(geminiConfig.url, geminiConfig.data) 
+                    : await fetch(`${proxyUrl}/v1/chat/completions`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`},
+                        body: JSON.stringify({
+                            model: model,
+                            messages: [{role: 'system', content: systemPrompt}, {role: 'user', content: "请开始总结。"}],
+                            temperature: 0.1, max_tokens: 150
+                        })
+                    });
 
-        if (!response.ok) {
-             const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
-             throw new Error(`API 请求失败: ${response.status} - ${errorData.error.message}`);
+                if (!response.ok) {
+                     const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
+                     // API请求失败时，返回包含详细错误信息的对象
+                     return { success: false, error: `API 请求失败: ${response.status} - ${errorData.error.message}` };
+                }
+                
+                const data = await response.json();
+                let rawContent = isGemini ? getGeminiResponseText(data) : data.choices[0].message.content;
+                rawContent = rawContent.replace(/^```json\s*/, '').replace(/```$/, '').trim();
+                const result = JSON.parse(rawContent);
+
+                if (result.summary && result.summary.trim()) {
+                    const newMemoryEntry = {
+                        content: `(在那次视频通话中，${result.summary.trim()})`,
+                        timestamp: Date.now(),
+                        source: 'call_summary'
+                    };
+                    chat.longTermMemory.push(newMemoryEntry);
+                    await db.chats.put(chat);
+                    console.log("通话记录已成功总结并存入长期记忆:", newMemoryEntry.content);
+                    return { success: true }; // 成功时，返回成功状态
+                } else {
+                    // AI返回内容不规范时，也返回错误对象
+                    return { success: false, error: "AI返回了空的或格式不正确的总结内容。" };
+                }
+
+            } catch (error) {
+                console.error("总结通话记录时出错:", error);
+                // 任何意外的程序错误，都返回错误对象
+                return { success: false, error: error.message };
+            }
         }
-        
-        const data = await response.json();
-        let rawContent = isGemini ? getGeminiResponseText(data) : data.choices[0].message.content;
-        rawContent = rawContent.replace(/^```json\s*/, '').replace(/```$/, '').trim();
-        const result = JSON.parse(rawContent);
-
-        if (result.summary && result.summary.trim()) {
-            const newMemoryEntry = {
-                content: `(在那次视频通话中，${result.summary.trim()})`,
-                timestamp: Date.now(),
-                source: 'call_summary'
-            };
-            chat.longTermMemory.push(newMemoryEntry);
-            await db.chats.put(chat);
-            console.log("通话记录已成功总结并存入长期记忆:", newMemoryEntry.content);
-            return true; // 明确返回成功状态
-        } else {
-            throw new Error("AI返回了空的或格式不正确的总结内容。");
-        }
-
-    } catch (error) {
-        console.error("总结通话记录时出错:", error);
-        // 这是最关键的修改：将捕获到的错误重新抛出！
-        throw error;
-    }
-    // ▲▲▲ 核心修改到这里结束 ▲▲▲
 }
 // ▼▼▼ 【全新 | V3.0 终极容错版】请用这一整块代码，完整替换旧的 summarizeExistingLongTermMemory 函数 ▼▼▼
 
